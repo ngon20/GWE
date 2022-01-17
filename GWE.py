@@ -7,6 +7,8 @@ bl_info = {
 import bpy
 from bpy.props import (BoolProperty, IntProperty, StringProperty, PointerProperty, EnumProperty)
 from bpy.app.handlers import persistent
+from bpy_extras import anim_utils
+from math import *
 
 # ------------------------------------------------------------------------
 #    Handlers
@@ -44,8 +46,10 @@ def GWE_SaveHandler(dummy):
     myserializer.GWE_DeformationRigName = mytool.GWE_DeformationRigName
     myserializer.GWE_MeshName = mytool.GWE_MeshName
     
-    mserializer.GWE_NumberOfAnimations = mytool.GWE_NumberOfAnimations
-
+    myserializer.GWE_NumberOfAnimations = mytool.GWE_NumberOfAnimations
+    
+    myserializer.GWE_CameraPointer = mytool.GWE_CameraPointer
+    
 #postload
 @persistent
 def GWE_LoadHandler(dummy):
@@ -75,6 +79,8 @@ def GWE_LoadHandler(dummy):
         mytool.GWE_MeshName = myserializer.GWE_MeshName
         
         mytool.GWE_NumberOfAnimations = myserializer.GWE_NumberOfAnimations
+        
+        mytool.GWE_CameraPointer = myserializer.GWE_CameraPointer
         
 
 
@@ -167,6 +173,21 @@ class GWE_Properties(bpy.types.PropertyGroup):
     
     GWE_NumberOfAnimations: IntProperty(
         name=''
+    )
+    
+    GWE_RecycledAnimation: PointerProperty(
+        name='',
+        type=bpy.types.Scene
+    )
+    
+    GWE_AlwaysBlank: StringProperty(
+        default='',
+        name=''
+    )
+    
+    GWE_CameraPointer: PointerProperty(
+        name='Camera',
+        type = bpy.types.Object
     )
     
 
@@ -293,8 +314,20 @@ class SkeletonExportPanel(bpy.types.Panel):
             return False
 
     def draw(self, context):
+        mytool = bpy.context.window_manager.GWE_tool
+        
         layout = self.layout
-        layout.label(text="Exports Skeleton as Mesh and Armature")
+        layout.label(text="Export Skeleton as Mesh and Armature:")
+        
+        op_exportRow = layout.row()
+        op_exportRow.operator('object.export_skeleton')
+        
+        if (mytool.GWE_bRigGenerated):
+            op_exportRow.enabled = True
+        else:
+            op_exportRow.enabled = False
+        
+        
         
         
 class AnimationToolsPanel(bpy.types.Panel):
@@ -335,6 +368,60 @@ class AnimationToolsPanel(bpy.types.Panel):
         if (mytool.GWE_bAnimLinked):
             op_linkSkeletonRow.enabled = False
             setupAnimationFileLabelRow.enabled = False
+            
+class AnimationToolsPanelPost(bpy.types.Panel):
+    bl_idname = 'GWE_PT_ANIMATIONTOOLSPANELPOST'
+    bl_label = 'Animation Tools'
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'GWE'
+    
+    @classmethod
+    def poll(cls, context):
+        mytool = bpy.context.window_manager.GWE_tool
+        if (mytool.GWE_ExportTypeAnimationFake == '2'):
+            return True
+        else:
+            return False
+        
+    def draw(self, context):
+        mytool = bpy.context.window_manager.GWE_tool
+        
+        layout = self.layout
+        
+        op_addCameraRow = layout.row()
+        op_addCameraRow.operator('object.animation_add_camera')
+        
+        op_delCameraRow = layout.row()
+        op_delCameraRow.operator('object.animation_delete_camera')
+        
+        
+        if (mytool.GWE_CameraPointer is not None):
+            camPosRows = layout.row()
+            camPosRows.label(text='Camera Properties: ')
+            
+            camPosRow1 = layout.row()
+            camPosRow1.prop(mytool.GWE_CameraPointer, 'location', index=0, text = 'X')
+            
+            camPosRow2 = layout.row()
+            camPosRow2.prop(mytool.GWE_CameraPointer, 'location', index=1, text = 'Y')
+            
+            camPosRow3 = layout.row()
+            camPosRow3.prop(mytool.GWE_CameraPointer, 'location', index=2, text = 'Z')  
+            
+            camFOVRow = layout.row()
+            camFOVRow.prop(mytool.GWE_CameraPointer.data, 'angle')
+        
+
+
+        
+        if (mytool.GWE_CameraPointer is not None):
+            op_addCameraRow.enabled = False
+        else:
+            op_delCameraRow.enabled = False
+        
+        
+        
         
             
 class AnimationLibraryPanel(bpy.types.Panel):
@@ -355,9 +442,7 @@ class AnimationLibraryPanel(bpy.types.Panel):
     def draw(self, context):
         mytool = bpy.context.window_manager.GWE_tool
         
-        layout = self.layout
-        
-        
+        layout = self.layout       
         
         layout.template_list('GWE_UL_AnimationSceneList', '', bpy.data, "scenes", bpy.context.window_manager, 'GWE_AnimationListIndex', type='DEFAULT')        
         
@@ -369,12 +454,61 @@ class AnimationLibraryPanel(bpy.types.Panel):
         animationSceneToolsRow.operator('object.delete_animation_scene')
         
         
-        layout.label(text='')
         addAnimationRow = layout.row()
         addAnimationCol1 = addAnimationRow.column()
         addAnimationCol2 = addAnimationRow.column()
         addAnimationCol1.prop(mytool, 'GWE_NewAnimationName')
-        addAnimationCol2.operator('object.add_animation_scene')             
+        addAnimationCol2.operator('object.add_animation_scene')        
+        
+        layout.label(text='')
+        layout.label(text='Recycle Bin -')
+        
+        #If we have a recycled scene, we set it to that animation's name.  Otherwise, blank property...
+        recycleRow = layout.row()
+        if (str(bpy.data.scenes.get('.GWE_RecycledAnim')) == 'None'):
+            recycleRow.prop(mytool, 'GWE_AlwaysBlank')
+        else:
+            recycleRow.prop(bpy.data.scenes.get('.GWE_RecycledAnim'), 'GWE_AnimationName')
+        
+        op_recycleRow = layout.row()
+        op_recycleRow.operator('object.restore_animation_scene')
+        op_recycleRow.operator('object.clear_recycled_animation')
+        
+        recycleRow.enabled = False
+    
+class AnimationExportPanel(bpy.types.Panel):
+    bl_idname = 'GWE_PT_ANIMATIONEXPORTPANEL'
+    bl_label = 'Animation Export'
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'GWE'
+    
+    @classmethod
+    def poll(cls, context):
+        mytool = bpy.context.window_manager.GWE_tool
+        if (mytool.GWE_ExportTypeAnimationFake == '2'):
+            return True
+        else:
+            return False
+
+    def draw(self, context):
+        mytool = bpy.context.window_manager.GWE_tool
+        
+        layout = self.layout
+        
+        layout.label(text='Export Selected Animation :')
+        
+        animationExportRow = layout.row()
+        animationExportRow.operator('object.animation_single_export')
+        
+        layout.label(text='Export All Animations :')
+        
+        animationBatchExportRow = layout.row()
+        animationBatchExportRow.operator('object.animation_batch_export')
+        
+
+        
+        
         
         
         
@@ -388,8 +522,22 @@ class GWE_UL_AnimationSceneList(bpy.types.UIList):
             
         row = layout.row(align=True)
         
-        name = item.name
         row.prop(item, "GWE_AnimationName", text='', emboss=False)
+        
+    def filter_items(self, context, data, propname):
+        
+        items = getattr(data, propname)
+        
+        filtered = [self.bitflag_filter_item] * len(items)
+        
+        for i, scene in enumerate(bpy.data.scenes):
+            if (scene.name[0] != '.' or scene.name[4] != '-'):
+                filtered[i] &= ~self.bitflag_filter_item
+        
+        #I do my own ordering so that bpy.data.scenes[] is in order...
+        ordered = []
+        
+        return filtered, ordered
         
         
         
@@ -436,14 +584,33 @@ class GWE_OT_SkeletonGenerateDeformRigBtn(bpy.types.Operator):
         for bone in bpy.context.object.data.edit_bones[:]:
             if not bone.name.lower().startswith('def-'):
                 bpy.context.object.data.edit_bones.remove(bone)
-                
+          
+        #used to copy transforms.  Think that might be an issue?      
         #remove all constraints on pose bones and add new copy transform constraints to the control rig
+        #for bone in bpy.context.object.pose.bones[:]:
+        #    for c in bone.constraints:
+        #        bone.constraints.remove(c)
+        #    cpytf = bone.constraints.new('COPY_TRANSFORMS')
+        #    cpytf.target = ctrl_rig
+        #    cpytf.subtarget = bone.name
+            
+        #add rotation and location constraints to ctrl rig
         for bone in bpy.context.object.pose.bones[:]:
             for c in bone.constraints:
                 bone.constraints.remove(c)
-            cpytf = bone.constraints.new('COPY_TRANSFORMS')
-            cpytf.target = ctrl_rig
-            cpytf.subtarget = bone.name
+            
+            cpyL = bone.constraints.new('COPY_LOCATION')
+            cpyL.target = ctrl_rig
+            cpyL.subtarget = bone.name
+            
+            cpyR = bone.constraints.new('COPY_ROTATION')
+            cpyR.target = ctrl_rig
+            cpyR.subtarget = bone.name
+            
+        #make sure all parents are keep offset
+        for bone in bpy.context.object.data.edit_bones[:]:
+            bone.use_connect = False
+                
             
         #go back to object mode, change layer so we can see def rig bones, change names of ctrl rig an def rig
         
@@ -523,7 +690,6 @@ class GWE_OT_SkeletonGenerateAnimationFile(bpy.types.Operator):
         
         for obj in collectionTest.all_objects:
             if (obj != mytool.GWE_DeformationRigPointer) and (obj != mytool.GWE_ControlRigPointer) and (obj != mytool.GWE_MeshPointer):
-                print(obj.name)
                 raise Exception('You have another object in the rig collection that should not be there...')
             
             
@@ -623,6 +789,58 @@ class GWE_OT_SkeletonCleanCollection(bpy.types.Operator):
         
         return {'FINISHED'}
     
+class GWE_OT_SkeletonExport(bpy.types.Operator):
+    bl_label = 'Export Skeleton'
+    bl_idname = 'object.export_skeleton'
+    
+    def execute(self, context):
+        mytool = bpy.context.window_manager.GWE_tool
+        
+        if (mytool.GWE_ExportPath == '' or mytool.GWE_ExportName == ''):
+            raise Exception('You have not assigned skeleton a name or path')
+        
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
+        mesh = mytool.GWE_MeshPointer
+        def_rig = mytool.GWE_DeformationRigPointer
+        
+        bpy.ops.object.select_all(action='DESELECT')
+        
+        mesh.select_set(True)
+        def_rig.select_set(True)
+        
+        bpy.context.view_layer.objects.active = def_rig
+        
+        #'Magic' code to read the export preferences        
+        presetDirectory = bpy.utils.preset_paths('operator/export_scene.fbx/')
+        presetPath = presetDirectory[0] + 'GWE_Skeleton.py'
+        
+        file = open(presetPath, 'r')
+        class emptyclass(object):
+            __slots__ = ('__dict__',)
+        op = emptyclass()
+
+        for line in file.readlines()[3::]:
+            exec(line, globals(), locals())
+            
+        op.filepath = bpy.path.abspath(mytool.GWE_ExportPath) + mytool.GWE_ExportName + '.fbx'
+        kwargs = op.__dict__
+        
+        #rename some stuff before exporting
+        name = def_rig.name
+        nameData = def_rig.data.name
+        
+        def_rig.name = 'rig'
+        def_rig.data.name = 'rig'
+        
+        #export
+        bpy.ops.export_scene.fbx(**kwargs)
+        
+        #set back to original names
+        def_rig.name = name
+        def_rig.data.name = nameData
+        
+        return {'FINISHED'}
     
 class GWE_OT_AnimationLinkSkeleton(bpy.types.Operator):
     bl_label = 'Link Skeleton'
@@ -652,13 +870,11 @@ class GWE_OT_AnimationLinkSkeleton(bpy.types.Operator):
         mytool.GWE_bAnimLinked=True
 
 
-        print("HELLLOOOOOO")
         #after we have linked our skeleton file, set up an initial animation scene, assign fake users and remove the scene...
         bpy.ops.object.add_initial_animation_scene()
         
         mytool.GWE_ExportTypeAnimationFake = '2'
         
-                
         return {'FINISHED'}
     
 #very redundant...most of this and add_animation_scene can be combined into one operator
@@ -734,6 +950,13 @@ class GWE_OT_AddInitialAnimationScene(bpy.types.Operator):
         bpy.data.scenes.remove(initialScene)
         
         
+        #set frame rate to 30, frame stat to '0' and frame end to '30'
+        bpy.context.scene.render.fps = 30
+        bpy.context.scene.frame_start = 0
+        bpy.context.scene.frame_end = 30
+
+        bpy.context.scene.frame_set(0)
+
         #select control rig, assign a new action to ctrl rig, go into pose mode...
         bpy.ops.object.select_all(action='DESELECT')
         ctrl_rig.select_set(True)
@@ -741,6 +964,9 @@ class GWE_OT_AddInitialAnimationScene(bpy.types.Operator):
         
         newAction = bpy.data.actions.new('ctrl-' + anim)
         ctrl_rig.animation_data.action = newAction
+
+        #assign fake user to prevent glitch
+        newAction.use_fake_user = True
         
         bpy.ops.object.mode_set(mode='POSE')
         
@@ -764,9 +990,9 @@ class GWE_OT_AddAnimationScene(bpy.types.Operator):
         if (len(mytool.GWE_NewAnimationName) == 0):
             raise Exception('Please specify a name for the new animation')
         
-        #we need to enforce that the animation does not already exist, or I can't 'get' a pointer to the new scene
-        if (bpy.data.scenes.get('.'+mytool.GWE_NewAnimationName)):
-            raise Exception('Animation of this name already exists')
+        for scene in bpy.data.scenes:
+            if scene.name.endswith(mytool.GWE_NewAnimationName):
+                raise Exception('This animation already exists in animation library')
             
             
         animSceneName = '.' + str(mytool.GWE_NumberOfAnimations) + '-' + mytool.GWE_NewAnimationName  
@@ -823,17 +1049,30 @@ class GWE_OT_AddAnimationScene(bpy.types.Operator):
         animScene.collection.objects.link(animRig)
         animScene.collection.objects.link(animMesh)
         
-        #bring control rig with us.  Remove from any collection it is in and move to our scene
+        #bring control rig with us (and other things).  Remove from any collection it is in and move to our scene
         for c in ctrl_rig.users_collection:
             c.objects.unlink(ctrl_rig)
         animScene.collection.objects.link(ctrl_rig)
+        
+        if (mytool.GWE_CameraPointer is not None):
+            cam = mytool.GWE_CameraPointer
+        
+            for c in cam.users_collection:
+                c.objects.unlink(cam)
+            animScene.collection.objects.link(cam)
         
         #travel to new scene, delete old scene
         initialScene = bpy.context.window.scene        
         bpy.context.window.scene = animScene
         
         bpy.data.scenes.remove(initialScene)
+
+        #set frame rate to 30, frame stat to '0' and frame end to '30'
+        bpy.context.scene.render.fps = 30
+        bpy.context.scene.frame_start = 0
+        bpy.context.scene.frame_end = 30
         
+        bpy.context.scene.frame_set(0)
         
         #select control rig, assign a new action to ctrl rig, go into pose mode...
         bpy.ops.object.select_all(action='DESELECT')
@@ -842,6 +1081,7 @@ class GWE_OT_AddAnimationScene(bpy.types.Operator):
         
         newAction = bpy.data.actions.new('ctrl-' + mytool.GWE_NewAnimationName)
         ctrl_rig.animation_data.action = newAction
+        newAction.use_fake_user = True
         
         bpy.ops.object.mode_set(mode='POSE')
         
@@ -854,7 +1094,6 @@ class GWE_OT_AddAnimationScene(bpy.types.Operator):
         #increment scene counter for naming convention
         mytool.GWE_NumberOfAnimations += 1
         
-        print(mytool.GWE_NumberOfAnimations)
         #change to our newly created scene for convenience
         bpy.context.window_manager.GWE_AnimationListIndex = mytool.GWE_NumberOfAnimations - 2
         
@@ -891,10 +1130,6 @@ class GWE_OT_MoveAnimationSceneUp(bpy.types.Operator):
     
     sceneName : StringProperty(default='')
     
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None
-    
     def execute(self, context):
         index = bpy.context.window_manager.GWE_AnimationListIndex
         
@@ -915,15 +1150,12 @@ class GWE_OT_MoveAnimationSceneDown(bpy.types.Operator):
     
     sceneName : StringProperty(default='')
     
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None
-    
     def execute(self, context):        
+        mytool = bpy.context.window_manager.GWE_tool
         index = bpy.context.window_manager.GWE_AnimationListIndex
         
         #if we are already at the top of the stack, button does nothing...
-        if (index + 1 == len(bpy.data.scenes)):
+        if (index + 1 == mytool.GWE_NumberOfAnimations - 1):
             print('Cannot move scene down.  Scene is already at the bottom of the stack')
             return {'FINISHED'}
         
@@ -938,7 +1170,7 @@ class GWE_OT_RenameAnimationScene(bpy.types.Operator):
     bl_label = 'R'
     bl_idname = 'object.rename_animation_scene'
     
-    sceneName : StringProperty(default='')
+    sceneName : StringProperty(name = 'Name:', default='')
     
     @classmethod
     def poll(cls, context):
@@ -947,15 +1179,86 @@ class GWE_OT_RenameAnimationScene(bpy.types.Operator):
     def execute(self, context):
         mytool = bpy.context.window_manager.GWE_tool
         
-        print(self.sceneName)
+        if (self.sceneName == ''):
+            raise Exception('Name was blank, nothing was changed.')
+            
+        for scene in bpy.data.scenes:
+            if scene.name.endswith(self.sceneName):
+                raise Exception('This animation already exists in animation library')
+        
+        #rename scene, deformation rig, and action...
+        context.scene.name = context.scene.name[:5] + self.sceneName
+        
+        animRig = bpy.data.objects.get('anim-'+context.scene.GWE_AnimationName)
+        animAction = bpy.data.actions.get('ctrl-'+context.scene.GWE_AnimationName)
+        
+        animRig.name = 'anim-' + self.sceneName
+        animRig.data.name = 'anim-' + self.sceneName
+        
+        animAction.name = 'ctrl-' + self.sceneName
+        
+        
+        
+        context.scene.GWE_AnimationName = self.sceneName
+        
+        self.sceneName = ''
         
         return {'FINISHED'}
+    
+    def invoke(self, context, vent):
+        return context.window_manager.invoke_props_dialog(self)
+
     
 class GWE_OT_DeleteAnimationScene(bpy.types.Operator):
     bl_label = 'X'
     bl_idname = 'object.delete_animation_scene'
     
-    sceneName : StringProperty(default='')
+    def execute(self, context):
+        mytool = bpy.context.window_manager.GWE_tool
+        index = bpy.context.window_manager.GWE_AnimationListIndex
+        
+        print(mytool.GWE_NumberOfAnimations)
+        if (mytool.GWE_NumberOfAnimations <= 2): 
+            raise Exception('Scene cannot be deleted as there is only one scene.  Consider renaming')
+            
+        #delete old recycled scene from memory
+        if not (str(mytool.GWE_RecycledAnimation) == 'None'):
+            print(mytool.GWE_RecycledAnimation)
+            bpy.data.scenes.remove(mytool.GWE_RecycledAnimation)
+        
+        bpy.data.scenes[index].name = '.GWE_RecycledAnim'
+        
+        mytool.GWE_RecycledAnimation = bpy.data.scenes.get('.GWE_RecycledAnim')
+        
+        if (index == 0):
+             gwe_SwitchAnimationScene(index, context)
+        else:
+            bpy.context.window_manager.GWE_AnimationListIndex -= 1
+            
+        #go down the stack decrementing the index of the animation name by 1 since we created a hole...
+        for i in range(index, len(bpy.data.scenes)-1):
+            scene = bpy.data.scenes[i]
+            #if we reach the end of the GWE scenes...break
+            if (scene.name[0] != '.' or scene.name[4] != '-'):
+                break
+            
+            #reconstruct name...
+            digits = len(str(i+1))
+            name = '.' + str(i+1) + '-' + scene.GWE_AnimationName
+        
+            for x in range(0, 3-digits):
+                name = name[0] + '0' + name[1:]
+                
+            scene.name = name                
+            
+    
+        mytool.GWE_NumberOfAnimations -= 1
+        
+        return {'FINISHED'}
+    
+class GWE_OT_RestoreAnimationScene(bpy.types.Operator):
+    bl_label = 'Restore'
+    bl_idname = 'object.restore_animation_scene'
     
     @classmethod
     def poll(cls, context):
@@ -964,7 +1267,281 @@ class GWE_OT_DeleteAnimationScene(bpy.types.Operator):
     def execute(self, context):
         mytool = bpy.context.window_manager.GWE_tool
         
-        print(self.sceneName)
+        if str(mytool.GWE_RecycledAnimation) == 'None':
+            raise Exception('No animation to restore...')
+            
+        for scene in bpy.data.scenes:
+            if scene.name.endswith(mytool.GWE_RecycledAnimation.GWE_AnimationName):
+                raise Exception('Cannot Restore Animation because animation name already exists in animation library')
+            
+        index = 0
+        
+        #increment index until we reach the end of our scene list
+        for scene in bpy.data.scenes:
+            if (scene.name[0] != '.' or scene.name[4] != '-'):
+                break
+            index+=1
+            
+        #rename recycled scene to index and clear the scene from the bin
+        digits = len(str(index+1))
+        name = name = '.' + str(index+1) + '-' + mytool.GWE_RecycledAnimation.GWE_AnimationName
+        
+        for i in range(0, 3-digits):
+            name = name[0] + '0' + name[1:]
+            
+        mytool.GWE_RecycledAnimation.name = name
+        
+        mytool.GWE_RecycledAnimation = None
+        
+        mytool.GWE_NumberOfAnimations += 1
+        
+        
+        
+        return {'FINISHED'}
+    
+#one line operator!
+class GWE_OT_ClearRecycledAnimation(bpy.types.Operator):
+    bl_label = 'Clear'
+    bl_idname = 'object.clear_recycled_animation'
+    
+    def execute(self, context):
+        mytool = bpy.context.window_manager.GWE_tool
+
+        bpy.data.scenes.remove(mytool.GWE_RecycledAnimation)
+        
+        return {'FINISHED'}
+    
+class GWE_OT_AnimationSingleExport(bpy.types.Operator):
+    bl_label = 'Export'
+    bl_idname = 'object.animation_single_export'
+    
+    def execute(self, context):
+        mytool = bpy.context.window_manager.GWE_tool
+        
+        ctrl_rig = mytool.GWE_ControlRigPointer
+        
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
+        anim_rig = bpy.data.objects.get('anim-' + bpy.context.scene.GWE_AnimationName)
+        
+        bpy.ops.object.select_all(action='DESELECT')
+        anim_rig.select_set(True)
+        bpy.context.view_layer.objects.active = anim_rig
+        
+        bpy.ops.nla.bake(frame_start=bpy.context.scene.frame_start, frame_end=bpy.context.scene.frame_end, visual_keying=True, only_selected=False, bake_types={'POSE'})
+        
+        
+        #before exporting, we need to disable constraints in the animation rig
+        bpy.ops.object.mode_set(mode='POSE')
+        bpy.ops.pose.select_all(action='SELECT')
+        
+        for bone in bpy.context.selected_pose_bones:
+            for con in bone.constraints:
+                con.mute = True
+        
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
+        #'Magic' code to read the export preferences        
+        presetDirectory = bpy.utils.preset_paths('operator/export_scene.fbx/')
+        presetPath = presetDirectory[0] + 'GWE_Animation.py'
+        
+        file = open(presetPath, 'r')
+        class emptyclass(object):
+            __slots__ = ('__dict__',)
+        op = emptyclass()
+
+        for line in file.readlines()[3::]:
+            exec(line, globals(), locals())
+            
+        op.filepath = bpy.path.abspath(mytool.GWE_ExportPath) + mytool.GWE_ExportName + '_' + bpy.context.scene.GWE_AnimationName + '.fbx'
+        kwargs = op.__dict__
+        
+        #before exporting, change name of animation rig to simply 'rig' 
+        oldName = anim_rig.name
+        oldDataName = anim_rig.data.name
+        anim_rig.name = 'rig'
+        anim_rig.data.name = 'rig'
+        
+        #before exporting, change the name of the scene as the name of the scene will be 
+        #the name of the animation in unity...
+        oldSceneName = bpy.context.scene.name
+        bpy.context.scene.name = bpy.context.scene.GWE_AnimationName
+        
+        
+        #EXPORT               
+        bpy.ops.export_scene.fbx(**kwargs)
+        
+        #change name of rig back
+        anim_rig.name = oldName
+        anim_rig.data.name = oldDataName
+        
+        #change name of the scene back
+        bpy.context.scene.name = oldSceneName
+        
+        
+        
+        #re-enable contraints on the bones
+        bpy.ops.object.mode_set(mode='POSE')
+        bpy.ops.pose.select_all(action='SELECT')
+        
+        for bone in bpy.context.selected_pose_bones:
+            for con in bone.constraints:
+                con.mute = False
+                
+                
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
+        bpy.ops.object.select_all(action='DESELECT')
+        ctrl_rig.select_set(True)
+        bpy.context.view_layer.objects.active = ctrl_rig
+        
+        bpy.ops.object.mode_set(mode='POSE')
+        
+        return {'FINISHED'}
+    
+class GWE_OT_AnimationBatchExport(bpy.types.Operator):
+    bl_label = 'Export'
+    bl_idname = 'object.animation_batch_export'
+    
+    def execute(self, context):
+        mytool = bpy.context.window_manager.GWE_tool
+        
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
+        ctrl_rig = mytool.GWE_ControlRigPointer
+        
+        startingScene = bpy.context.scene
+        
+        
+        #'Magic' code to read the export preferences        
+        presetDirectory = bpy.utils.preset_paths('operator/export_scene.fbx/')
+        presetPath = presetDirectory[0] + 'GWE_Animation.py'
+            
+        file = open(presetPath, 'r')
+        class emptyclass(object):
+            __slots__ = ('__dict__',)
+        op = emptyclass()
+
+        for line in file.readlines()[3::]:
+            exec(line, globals(), locals())
+                
+
+        
+        #basically do the same thing as single export but also move ctrl rig with us
+        for scene in bpy.data.scenes:
+            if (scene.name[0] != '.' or scene.name[4] != '-'):
+                break
+            
+            bpy.context.window.scene = scene
+            
+            ctrl_rig.animation_data.action = bpy.data.actions.get('ctrl-' + bpy.context.window.scene.GWE_AnimationName)
+            
+            anim_rig = bpy.data.objects.get('anim-' + bpy.context.window.scene.GWE_AnimationName)
+        
+            bpy.ops.object.select_all(action='DESELECT')
+            anim_rig.select_set(True)
+            bpy.context.view_layer.objects.active = anim_rig
+            
+            bpy.ops.nla.bake(frame_start=bpy.context.window.scene.frame_start, frame_end=bpy.context.window.scene.frame_end, visual_keying=True, only_selected=False, bake_types={'POSE'})
+            
+            
+            #before exporting, we need to disable constraints in the animation rig
+            bpy.ops.object.mode_set(mode='POSE')
+            bpy.ops.pose.select_all(action='SELECT')
+            
+            for bone in bpy.context.selected_pose_bones:
+                for con in bone.constraints:
+                    con.mute = True
+            
+            bpy.ops.object.mode_set(mode='OBJECT')
+            
+            #before exporting, change name of animation rig to simply 'rig' 
+            oldName = anim_rig.name
+            oldDataName = anim_rig.data.name
+            anim_rig.name = 'rig'
+            anim_rig.data.name = 'rig'
+            
+            #before exporting, change the name of the scene as the name of the scene will be 
+            #the name of the animation in unity...
+            oldSceneName = bpy.context.scene.name
+            scene.name = scene.GWE_AnimationName
+            
+            #EXPORT               
+            op.filepath = bpy.path.abspath(mytool.GWE_ExportPath) + mytool.GWE_ExportName + '_' + bpy.context.window.scene.GWE_AnimationName + '.fbx'
+            kwargs = op.__dict__    
+        
+            bpy.ops.export_scene.fbx(**kwargs)
+            
+            #change name of rig back
+            anim_rig.name = oldName
+            anim_rig.data.name = oldDataName
+            
+            #change name of the scene back
+            scene.name = oldSceneName
+            
+            #re-enable contraints on the bones
+            bpy.ops.object.mode_set(mode='POSE')
+            bpy.ops.pose.select_all(action='SELECT')
+            
+            for bone in bpy.context.selected_pose_bones:
+                for con in bone.constraints:
+                    con.mute = False
+                    
+            bpy.ops.object.mode_set(mode='OBJECT')       
+            bpy.ops.object.select_all(action='DESELECT')
+            
+        #go back to initial scene and reenter pose mode on ctrl rig
+        bpy.context.window.scene = startingScene
+        ctrl_rig.animation_data.action = bpy.data.actions.get('ctrl-' + bpy.context.window.scene.GWE_AnimationName)
+        
+        return {'FINISHED'}
+    
+class GWE_OT_AnimationAddCamera(bpy.types.Operator):
+    bl_label = 'Add Camera'
+    bl_idname = 'object.animation_add_camera'
+    
+    
+    def execute(self, context):
+        mytool = bpy.context.window_manager.GWE_tool
+        
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
+        bpy.ops.object.camera_add(rotation = (radians(90), 0, radians(180)))
+        bpy.context.object.name = 'cam'
+        bpy.context.object.data.name = 'cam'
+        
+        bpy.context.object.data.lens_unit = 'FOV'
+        bpy.context.object.data.sensor_fit = 'VERTICAL'
+        bpy.context.object.data.angle = radians(60)
+        
+        
+        mytool.GWE_CameraPointer = bpy.context.object
+        
+        
+        
+        #go back to ctrl rig pose mode for convenience
+        ctrl_rig = mytool.GWE_ControlRigPointer
+        
+        bpy.ops.object.select_all(action='DESELECT')
+        ctrl_rig.select_set(True)
+        bpy.context.view_layer.objects.active = ctrl_rig 
+            
+        bpy.ops.object.mode_set(mode='POSE')        
+        
+        
+        return {'FINISHED'}
+    
+class GWE_OT_AnimationDeleteCamera(bpy.types.Operator):
+    bl_label = 'Delete Camera'
+    bl_idname = 'object.animation_delete_camera'
+    
+    
+    def execute(self, context):
+        mytool = bpy.context.window_manager.GWE_tool
+        
+        bpy.data.cameras.remove(mytool.GWE_CameraPointer.data)
+        
+        mytool.GWE_CameraPointer = None
         
         return {'FINISHED'}
     
@@ -978,11 +1555,14 @@ classes = (
     SkeletonExportPanel,
     AnimationToolsPanel,
     AnimationLibraryPanel,
+    AnimationToolsPanelPost,
+    AnimationExportPanel,
     
     GWE_OT_SkeletonGenerateDeformRigBtn,
     GWE_OT_SkeletonGenerateAnimationFile,
     GWE_OT_SkeletonCleanCollection,
     GWE_OT_SkeletonDisassembleRig,
+    GWE_OT_SkeletonExport,
     GWE_OT_AnimationLinkSkeleton,
     GWE_OT_AddInitialAnimationScene,
     GWE_OT_AddAnimationScene,
@@ -990,6 +1570,12 @@ classes = (
     GWE_OT_MoveAnimationSceneDown,
     GWE_OT_RenameAnimationScene,
     GWE_OT_DeleteAnimationScene,    
+    GWE_OT_RestoreAnimationScene,
+    GWE_OT_ClearRecycledAnimation,
+    GWE_OT_AnimationSingleExport,
+    GWE_OT_AnimationBatchExport,
+    GWE_OT_AnimationAddCamera,
+    GWE_OT_AnimationDeleteCamera,
     
     GWE_UL_AnimationSceneList
     )
@@ -1003,11 +1589,31 @@ def gwe_SwitchAnimationScene(self, context):
     scene = bpy.data.scenes[index]
         
     ctrl_rig = mytool.GWE_ControlRigPointer
+    
+    #if we delete all the keyframes while animation blender...for some reason...unassigns the action.  Fix this...
+    action = ctrl_rig.animation_data.action
+
+    if not (action):
+        bpy.data.actions.remove(bpy.data.actions.get('ctrl-' + bpy.context.scene.GWE_AnimationName))
+        bpy.data.actions.new('ctrl-' + bpy.context.scene.GWE_AnimationName)
+        ctrl_rig.animation_data.action = bpy.data.actions.get('ctrl-' + scene.GWE_AnimationName)
+    
+    elif not (action.name == 'ctrl-' + bpy.context.scene.GWE_AnimationName):
+        bpy.data.actions.remove(bpy.data.actions.get('ctrl-' + bpy.context.scene.GWE_AnimationName))
+        action.name = 'ctrl-' + bpy.context.scene.GWE_AnimationName
+    
         
-    #travel to new scene, bringing control rig with you
+    #travel to new scene, bringing control rig with you (and camera and things)
     for c in ctrl_rig.users_collection:
         c.objects.unlink(ctrl_rig)
     scene.collection.objects.link(ctrl_rig)
+    
+    if (mytool.GWE_CameraPointer is not None):
+        cam = mytool.GWE_CameraPointer
+        
+        for c in cam.users_collection:
+            c.objects.unlink(cam)
+        scene.collection.objects.link(cam)
     
     bpy.context.window.scene = scene
         
@@ -1016,14 +1622,19 @@ def gwe_SwitchAnimationScene(self, context):
     bpy.context.view_layer.objects.active = ctrl_rig
     
     #set our ctrl_rig to use the proper action...
-    
     ctrl_rig.animation_data.action = bpy.data.actions.get('ctrl-' + scene.GWE_AnimationName)
     
     #go to pose mode
     bpy.ops.object.mode_set(mode='POSE')
     
+    
+    
     return
 
+def gwe_LockAction(self, context):
+    print('hi')
+    
+    return
 
 def menu_func(self, context):
     self.layout.operator(ExportPanel.bl_idname)
@@ -1037,7 +1648,9 @@ def register():
     bpy.types.Object.GWE_serializer = PointerProperty(type=GWE_Properties)
     
     bpy.types.WindowManager.GWE_AnimationListIndex = IntProperty(update=gwe_SwitchAnimationScene)
-    bpy.types.Scene.GWE_AnimationName = StringProperty(default='')
+    bpy.types.Scene.GWE_AnimationName = StringProperty(default='', name='')
+    
+    bpy.types.Action.update = gwe_SwitchAnimationScene
 
     bpy.app.handlers.save_pre.append(GWE_SaveHandler)
     bpy.app.handlers.load_post.append(GWE_LoadHandler)
